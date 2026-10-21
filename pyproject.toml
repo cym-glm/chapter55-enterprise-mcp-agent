@@ -1,0 +1,14 @@
+[project]
+name = "chapter55-enterprise-mcp-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.156.4",
+    "httpx>=0.28.1",
+    "langchain-openai>=1.7.2",
+    "mcp[cli]>=2,<3",
+    "python-dotenv>=1.2.4",
+    "uvicorn[standard]>=0.54.0",
+]
