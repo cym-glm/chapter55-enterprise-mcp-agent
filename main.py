@@ -1,14 +1,10 @@
 import os
-from typing import TypedDict
 
 from dotenv import load_dotenv
-from deepagents import create_deep_agent
 from langchain.agents import create_agent
+from langchain.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.graph import END, START, StateGraph
 
-
-# 1. 加载环境变量
 load_dotenv()
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -16,13 +12,8 @@ base_url = os.getenv("OPENAI_BASE_URL")
 model_name = os.getenv("OPENAI_MODEL", "deepseek-chat")
 
 if not api_key:
-    raise RuntimeError(
-        "没有配置 OPENAI_API_KEY，请检查项目根目录下的 .env 文件。"
-    )
+    raise RuntimeError("请先在 .env 中配置 OPENAI_API_KEY")
 
-
-# 2. 创建模型实例
-# LangChain 与 DeepAgents 都使用这个模型配置。
 model = ChatOpenAI(
     model=model_name,
     api_key=api_key,
@@ -31,200 +22,140 @@ model = ChatOpenAI(
 )
 
 
-# 3. 创建业务分析 Agent：使用 LangChain 官方 API
+# 1. 创建业务分析 Agent
 business_agent = create_agent(
     model=model,
     tools=[],
     system_prompt="""
-你是一名企业产品与商业分析专家。
+你是企业产品商业分析专家。
 
-你的职责：
-1. 分析目标客户和核心业务问题。
-2. 分析产品价值和潜在应用场景。
-3. 判断需求是否明确，指出关键假设。
-4. 分析商业风险、推广难点和收益衡量方式。
+重点分析：
+- 目标客户和用户痛点
+- 产品价值与业务场景
+- 商业风险和关键假设
+- 需要验证的数据
 
-输出要求：
-- 使用中文。
-- 结论必须有清晰的推理依据。
-- 不要编造市场规模、客户数据或财务数字。
-- 缺少数据时明确标注“需要进一步验证”。
-- 只负责业务与商业分析，不负责设计具体技术架构。
+只负责业务分析，不负责技术架构设计。
+没有可靠数据时，不要编造市场规模、营收或客户数量。
+请用中文回答，输出清晰、结构化的结论。
 """,
 )
 
 
-# 4. 创建技术分析 Agent：使用 DeepAgents 官方 API
-technical_agent = create_deep_agent(
+# 2. 创建技术分析 Agent
+technical_agent = create_agent(
     model=model,
     tools=[],
     system_prompt="""
-你是一名企业 AI 应用架构师。
+你是企业 AI 应用架构师。
 
-你的职责：
-1. 分析系统实现所需的主要模块。
-2. 评估大模型、RAG、工具调用、MCP、数据库等技术
-   是否有必要使用。
-3. 分析系统集成、权限、安全、可观测性和部署方面的风险。
-4. 给出分阶段实施建议。
-5. 指出技术方案依赖哪些尚未确认的业务条件。
+重点分析：
+- 系统模块和技术架构
+- 大模型、RAG、工具调用、MCP 的使用必要性
+- 数据库、权限、安全和部署
+- 实施难点、技术风险和阶段计划
 
-输出要求：
-- 使用中文。
-- 只提出与需求相关的技术方案，不要为了使用新技术而堆砌技术。
-- 不要虚构已经完成的系统或测试结果。
-- 对没有充分信息的结论明确说明假设。
-- 只负责技术分析，不负责最终商业立项决策。
+只负责技术分析，不负责商业价值判断。
+不要为了使用新技术而堆砌技术。
+请用中文回答。
 """,
 )
 
 
-# 5. 定义 LangGraph 的共享状态
-class ProjectState(TypedDict, total=False):
-    project_requirement: str
-    business_analysis: str
-    technical_analysis: str
-    final_report: str
-
-
-# 6. 定义业务分析节点
-def analyze_business(state: ProjectState) -> dict:
-    """调用业务分析 Agent。"""
+# 3. 将业务 Agent 封装成 Supervisor 可以调用的工具
+@tool
+def analyze_business(requirement: str) -> str:
+    """分析产品的商业价值、目标客户、业务需求和商业风险。"""
 
     result = business_agent.invoke(
         {
             "messages": [
                 {
                     "role": "user",
-                    "content": (
-                        "请对下面的产品需求进行业务分析。\n\n"
-                        f"{state['project_requirement']}"
-                    ),
+                    "content": requirement,
                 }
             ]
         }
     )
 
-    answer = result["messages"][-1].content
-
-    return {
-        "business_analysis": answer,
-    }
+    return str(result["messages"][-1].content)
 
 
-# 7. 定义技术分析节点
-def analyze_technology(state: ProjectState) -> dict:
-    """调用技术分析 Agent。"""
+# 4. 将技术 Agent 封装成工具
+@tool
+def analyze_technology(requirement: str) -> str:
+    """分析产品的技术可行性、系统架构、技术风险和实施计划。"""
 
     result = technical_agent.invoke(
         {
             "messages": [
                 {
                     "role": "user",
-                    "content": (
-                        "请对下面的产品需求进行技术可行性分析。\n\n"
-                        f"{state['project_requirement']}"
-                    ),
+                    "content": requirement,
                 }
             ]
         }
     )
 
-    answer = result["messages"][-1].content
-
-    return {
-        "technical_analysis": answer,
-    }
+    return str(result["messages"][-1].content)
 
 
-# 8. 定义汇总节点
-def generate_report(state: ProjectState) -> dict:
-    """整合两个专业 Agent 的分析结果。"""
+# 5. 创建 Supervisor Agent
+supervisor = create_agent(
+    model=model,
+    tools=[
+        analyze_business,
+        analyze_technology,
+    ],
+    system_prompt="""
+你是企业项目评审 Supervisor，负责协调专业分析 Agent。
 
-    report_prompt = f"""
-你是一名企业项目评审负责人。
+你可以使用以下工具：
+1. analyze_business：业务价值、客户需求、商业风险分析。
+2. analyze_technology：技术架构、技术可行性、实施风险分析。
 
-请基于下面两份分析结果，输出一份新产品可行性评估报告。
+工作原则：
 
-【原始需求】
-{state["project_requirement"]}
-
-【业务分析结果】
-{state["business_analysis"]}
-
-【技术分析结果】
-{state["technical_analysis"]}
-
-请按以下结构输出：
-
-一、项目背景与目标
-二、业务价值分析
-三、技术实现建议
-四、主要风险与待验证假设
-五、建议的实施阶段
-六、是否建议进入下一阶段评审
-
-要求：
-    1. 区分已知信息、分析判断和待验证假设。
-2. 不得编造业务数据或测试结果。
-3. 不要将技术可行性直接等同于商业可行性。
-4. 对信息不足的地方，给出需要补充的数据。
-5. 最终结论应谨慎，并说明判断依据。
-"""
-
-    result = model.invoke(report_prompt)
-
-    return {
-        "final_report": str(result.content),
-    }
+- 商业价值问题优先使用业务分析工具。
+- 技术选型、架构和实施问题优先使用技术分析工具。
+- 需要综合评估立项时，应结合业务和技术两方面的分析。
+- 不相关的专业 Agent 不要无故调用。
+- 对缺少证据的数据，明确标注需要验证。
+- 工具返回的结果是分析依据，不是绝对事实。
+- 不要声称已经执行了实际测试或查询了不存在的业务系统。
+- 最终用中文输出结论、依据、风险和后续建议。
+""",
+)
 
 
-# 9. 使用 LangGraph 官方 StateGraph 编排
-builder = StateGraph(ProjectState)
-
-builder.add_node("business_analysis", analyze_business)
-builder.add_node("technical_analysis", analyze_technology)
-builder.add_node("generate_report", generate_report)
-
-# 本章采用固定流程：
-# 先做业务分析，再做技术分析，最后汇总。
-builder.add_edge(START, "business_analysis")
-builder.add_edge("business_analysis", "technical_analysis")
-builder.add_edge("technical_analysis", "generate_report")
-builder.add_edge("generate_report", END)
-
-# 编译成可以执行的图
-project_graph = builder.compile()
-
-
-# 10. 运行项目
 def main() -> None:
-    requirement = """
-我们计划为中小型电商企业开发一款 AI 客服产品。
+    print("企业项目评审 Supervisor Agent")
+    print("输入 exit 退出。\n")
 
-产品希望帮助商家处理常见商品咨询、订单状态查询、
-退换货政策查询和售后问题。
+    while True:
+        question = input("请输入项目问题：").strip()
 
-初期先服务少量试点商家，希望控制开发成本，
-并且需要考虑后续接入商家的订单系统、商品系统和知识库。
+        if question.lower() in {"exit", "quit"}:
+            break
 
-目前还没有准确的客户数量、预算和业务效果数据。
-请评估这个产品是否值得进入下一阶段的立项评审。
-"""
+        if not question:
+            continue
 
-    result = project_graph.invoke(
-        {
-            "project_requirement": requirement,
-        }
-    )
+        result = supervisor.invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": question,
+                    }
+                ]
+            }
+        )
 
-    print("\n" + "=" * 60)
-    print("企业新产品可行性分析报告")
-    print("=" * 60)
-    print(result["final_report"])
+        print("\n===== Supervisor 最终答复 =====")
+        print(result["messages"][-1].content)
+        print()
 
 
 if __name__ == "__main__":
     main()
-
-
