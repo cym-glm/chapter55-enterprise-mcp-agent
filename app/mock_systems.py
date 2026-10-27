@@ -83,7 +83,7 @@ def query_knowledge(topic: str) -> dict:
             "message": f"知识主题 {topic} 不存在",
         }
 
-    return {
+    return {    
         "success": True,
         "data": {
             "topic": topic,
